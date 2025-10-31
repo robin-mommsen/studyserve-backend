@@ -1,0 +1,186 @@
+image: docker:latest
+
+services:
+  - name: docker:dind
+    command: ["--tls=false", "--host=tcp://0.0.0.0:2375"]
+
+variables:
+  DOCKER_DRIVER: overlay2
+  DOCKER_TLS_CERTDIR: ""
+  DOCKER_HOST: tcp://docker:2375
+
+stages:
+  - BUILD
+  - DEPLOY
+
+before_script:
+  - apk update && apk add --no-cache openssh-client
+  - mkdir -p ~/.ssh
+  - chmod 700 ~/.ssh
+  - cp "$SSH_PRIVATE_KEY" ~/.ssh/id_rsa
+  - chmod 600 ~/.ssh/id_rsa
+
+  - cp "$TF_SSH_PRIV" ~/.ssh/id_rsa_tf
+  - chmod 600 ~/.ssh/id_rsa_tf
+
+  - cp "$TF_SSH_PUB" ~/.ssh/id_rsa_tf.pub
+  - chmod 644 ~/.ssh/id_rsa_tf.pub
+
+  - docker login "$REGISTRY_URL" -u "$REGISTRY_USER" -p "$REGISTRY_PASSWORD"
+
+# ------------------------------------------------------------
+# 1) BUILD JOB
+# ------------------------------------------------------------
+build:
+  stage: BUILD
+  only:
+    - development
+    - staging
+    - main
+  script:
+    - echo "Building server image for branch $CI_COMMIT_REF_NAME"
+    - docker build -t server:$CI_COMMIT_SHA -f Dockerfile .
+    - docker tag server:$CI_COMMIT_SHA "$REGISTRY_URL/server:${CI_COMMIT_REF_NAME}-latest"
+    - docker push "$REGISTRY_URL/server:${CI_COMMIT_REF_NAME}-latest"
+    - echo "Build successful"
+
+# ------------------------------------------------------------
+# 2) DEPLOY JOB
+# ------------------------------------------------------------
+deploy:
+  stage: DEPLOY
+  rules:
+    - if: '$CI_COMMIT_REF_NAME == "development"'
+      variables:
+        ENV: "development"
+        PORT: "7003"
+        DEPLOY_PATH: "/opt/server/dev"
+        COMPOSE_PROJECT_NAME: "django-dev"
+        DB_NAME: "$DB_NAME_DEV"
+        DB_USER: "$DB_USER_DEV"
+        DB_PASSWORD: "$DB_PASSWORD_DEV"
+        PG_CONN_STR: "$PG_CONN_STR_DEV"
+        EMAIL_HOST: "$EMAIL_HOST_DEV"
+        EMAIL_PORT: "$EMAIL_PORT_DEV"
+        EMAIL_HOST_USER: ""
+        EMAIL_HOST_PASSWORD: ""
+        EMAIL_USE_TLS: "$EMAIL_USE_TLS_DEV"
+        KEYCLOAK_REALM: "$KEYCLOAK_REALM_DEV"
+        KEYCLOAK_CLIENT_ID: "$KEYCLOAK_CLIENT_ID_DEV"
+        KEYCLOAK_ISSUER: "$KEYCLOAK_ISSUER_DEV"
+    - if: '$CI_COMMIT_REF_NAME == "staging"'
+      variables:
+        ENV: "staging"
+        PORT: "7103"
+        DEPLOY_PATH: "/opt/server/staging"
+        COMPOSE_PROJECT_NAME: "django-staging"
+        DB_NAME: "$DB_NAME_STAGING"
+        DB_USER: "$DB_USER_STAGING"
+        DB_PASSWORD: "$DB_PASSWORD_STAGING"
+        PG_CONN_STR: "$PG_CONN_STR_STAGING"
+        EMAIL_HOST: "$EMAIL_HOST_STAGING"
+        EMAIL_PORT: "$EMAIL_PORT_STAGING"
+        EMAIL_HOST_USER: "$EMAIL_HOST_USER_STAGING"
+        EMAIL_HOST_PASSWORD: "$EMAIL_HOST_PASSWORD_STAGING"
+        EMAIL_USE_TLS: "$EMAIL_USE_TLS_STAGING"
+        KEYCLOAK_REALM: "$KEYCLOAK_REALM_STAGING"
+        KEYCLOAK_CLIENT_ID: "$KEYCLOAK_CLIENT_ID_STAGING"
+        KEYCLOAK_ISSUER: "$KEYCLOAK_ISSUER_STAGING"
+    - if: '$CI_COMMIT_REF_NAME == "main"'
+      variables:
+        ENV: "main"
+        PORT: "7203"
+        DEPLOY_PATH: "/opt/server/prod"
+        COMPOSE_PROJECT_NAME: "django-prod"
+        DB_NAME: "$DB_NAME_PROD"
+        DB_USER: "$DB_USER_PROD"
+        DB_PASSWORD: "$DB_PASSWORD_PROD"
+        PG_CONN_STR: "$PG_CONN_STR_PROD"
+        EMAIL_HOST: "$EMAIL_HOST_PROD"
+        EMAIL_PORT: "$EMAIL_PORT_PROD"
+        EMAIL_HOST_USER: "$EMAIL_HOST_USER_PROD"
+        EMAIL_HOST_PASSWORD: "$EMAIL_HOST_PASSWORD_PROD"
+        EMAIL_USE_TLS: "$EMAIL_USE_TLS_PROD"
+        KEYCLOAK_REALM: "$KEYCLOAK_REALM_PROD"
+        KEYCLOAK_CLIENT_ID: "$KEYCLOAK_CLIENT_ID_PROD"
+        KEYCLOAK_ISSUER: "$KEYCLOAK_ISSUER_PROD"
+    - when: never
+
+  script:
+    - mkdir deploy
+    - echo "ENV=$ENV" >> deploy/.env
+    - echo "PORT=$PORT" >> deploy/.env
+    - echo "COMPOSE_PROJECT_NAME=$COMPOSE_PROJECT_NAME" >> deploy/.env
+    - echo "DEPLOY_PATH=$DEPLOY_PATH" >> deploy/.env
+    - echo "REGISTRY_URL=${REGISTRY_URL}" >> deploy/.env
+
+    # Keycloak-Variablen
+    - echo "KEYCLOAK_REALM=$KEYCLOAK_REALM" >> deploy/.env
+    - echo "KEYCLOAK_CLIENT_ID=$KEYCLOAK_CLIENT_ID" >> deploy/.env
+    - echo "KEYCLOAK_ISSUER=$KEYCLOAK_ISSUER" >> deploy/.env
+
+    - echo "KEYCLOAK_SERVER_URL=$KEYCLOAK_SERVER_URL" >> deploy/.env
+    - echo "KEYCLOAK_CLIENT_SECRET=$KEYCLOAK_CLIENT_SECRET" >> deploy/.env
+    - echo "KEYCLOAK_AUDIENCE=$KEYCLOAK_AUDIENCE" >> deploy/.env
+    - echo "KEYCLOAK_ALGORITHM=$KEYCLOAK_ALGORITHM" >> deploy/.env
+    - echo "KEYCLOAK_VERIFY_TOKENS_WITH_KEYCLOAK=$KEYCLOAK_VERIFY_TOKENS_WITH_KEYCLOAK" >> deploy/.env
+    - echo "KEYCLOAK_PERMISSION_PATH=$KEYCLOAK_PERMISSION_PATH" >> deploy/.env
+    - echo "KEYCLOAK_USER_ID_FIELD=$KEYCLOAK_USER_ID_FIELD" >> deploy/.env
+    - echo "KEYCLOAK_USER_ID_CLAIM=$KEYCLOAK_USER_ID_CLAIM" >> deploy/.env
+
+    - echo "KEYCLOAK_CLAIM_MAPPING_FIRST_NAME=$KEYCLOAK_CLAIM_MAPPING_FIRST_NAME" >> deploy/.env
+    - echo "KEYCLOAK_CLAIM_MAPPING_LAST_NAME=$KEYCLOAK_CLAIM_MAPPING_LAST_NAME" >> deploy/.env
+    - echo "KEYCLOAK_CLAIM_MAPPING_EMAIL=$KEYCLOAK_CLAIM_MAPPING_EMAIL" >> deploy/.env
+    - echo "KEYCLOAK_CLAIM_MAPPING_USERNAME=$KEYCLOAK_CLAIM_MAPPING_USERNAME" >> deploy/.env
+    - echo "KEYCLOAK_CLAIM_MAPPING_SUB=$KEYCLOAK_CLAIM_MAPPING_SUB" >> deploy/.env
+
+    # DB-Variablen
+    - echo "DB_ENGINE=django.db.backends.postgresql" >> deploy/.env
+    - echo "DB_NAME=$DB_NAME" >> deploy/.env
+    - echo "DB_USER=$DB_USER" >> deploy/.env
+    - echo "DB_PASSWORD=$DB_PASSWORD" >> deploy/.env
+    - echo "DB_HOST=$DB_HOST" >> deploy/.env
+    - echo "DB_PORT=$DB_PORT" >> deploy/.env
+
+    - echo "PG_CONN_STR=$PG_CONN_STR" >> deploy/.env
+
+    # Mail-Server Variablen
+    - echo "EMAIL_BACKEND=$EMAIL_BACKEND" >> deploy/.env
+    - echo "EMAIL_HOST=$EMAIL_HOST" >> deploy/.env
+    - echo "EMAIL_PORT=$EMAIL_PORT" >> deploy/.env
+    - echo "EMAIL_HOST_USER=$EMAIL_HOST_USER" >> deploy/.env
+    - echo "EMAIL_HOST_PASSWORD=$EMAIL_HOST_PASSWORD" >> deploy/.env
+    - echo "EMAIL_USE_TLS=$EMAIL_USE_TLS" >> deploy/.env
+    - echo "DEFAULT_FROM_EMAIL=$DEFAULT_FROM_EMAIL" >> deploy/.env
+
+    # Ansible-Variablen
+    - echo "ANSIBLE_AUTH=$ANSIBLE_AUTH" >> deploy/.env
+    - echo "TF_SSH_PRIV_PATH=/root/.ssh/id_rsa_tf" >> deploy/.env
+    - echo "TF_SSH_PUB=$TF_SSH_PUB"               >> deploy/.env
+    - echo "HETZNER_API_KEY=$ANSIBLE_HETZNER_API_KEY" >> deploy/.env
+    - echo "TF_SSH_PUB_PATH=/root/.ssh/id_rsa_tf.pub" >> deploy/.env
+
+    # SECRET_KEY
+    - echo "SECRET_KEY=$SECRET_KEY" >> deploy/.env
+
+    - cp docker-compose.yml deploy/
+
+    - cp ~/.ssh/id_rsa_tf deploy/id_rsa_tf
+    - chmod 600 deploy/id_rsa_tf
+
+    - cp ~/.ssh/id_rsa_tf.pub deploy/id_rsa_tf.pub
+    - chmod 644 deploy/id_rsa_tf.pub
+
+    - ssh -o StrictHostKeyChecking=no "$SSH_USER@$SSH_HOST" "rm -rf '$DEPLOY_PATH/id_rsa_tf'"
+
+    - ssh -o StrictHostKeyChecking=no "$SSH_USER@$SSH_HOST" "mkdir -p '$DEPLOY_PATH' && ls -ld '$DEPLOY_PATH'"
+
+    - scp -o StrictHostKeyChecking=no deploy/.env deploy/docker-compose.yml deploy/id_rsa_tf deploy/id_rsa_tf.pub "$SSH_USER@$SSH_HOST:$DEPLOY_PATH"
+
+    - >
+      ssh -o StrictHostKeyChecking=no "$SSH_USER@$SSH_HOST" "
+        docker login '$REGISTRY_URL' -u '$REGISTRY_USER' -p '$REGISTRY_PASSWORD' &&
+        cd '$DEPLOY_PATH' &&
+        docker compose pull &&
+        docker compose up -d --remove-orphans
+      "
